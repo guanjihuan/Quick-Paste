@@ -1,0 +1,50 @@
+{
+  "name": "quick-paste",
+  "version": "1.0.0",
+  "description": "悬浮快速粘贴工具 — 分组管理常用句子，点击即粘贴到当前焦点窗口",
+  "main": "main.js",
+  "author": "",
+  "license": "MIT",
+  "scripts": {
+    "start": "node ./scripts/start.js",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  },
+  "dependencies": {
+    "koffi": "^2.16.3"
+  },
+  "build": {
+    "appId": "com.example.quickpaste",
+    "productName": "快速粘贴",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "icon.ico",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "快速粘贴"
+    }
+  }
+}
