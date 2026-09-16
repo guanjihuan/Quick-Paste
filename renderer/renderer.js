@@ -11,6 +11,11 @@ let selectedPhraseIndex = -1;
 let currentFilter = 'all';
 let dragSrcId = null;
 let dragSrcKind = null;
+// 全局快捷键录制态：setupKeyboardShortcuts 顶部优先检查 isRecordingShortcut，
+// 是的话所有 keydown 都走录制流程，不再处理其它快捷键。recordInvalidShown 保证
+// 「需要修饰键」提示每个录制会话只弹一次，按 5 个字母只看到 1 条 toast。
+let isRecordingShortcut = false;
+let recordInvalidShown = false;
 // 拖拽过程中的 rect 缓存：dragstart 时一次性算出所有 li 的 bounding rect，
 // 避免 dragover 每像素 mousemove 都调 getBoundingClientRect 强制 reflow。
 let dragRectCache = null;
@@ -21,6 +26,9 @@ let lastDropTarget = null;
 let lastDropAbove = null;
 // 上一帧高亮的 li：dragover 从 A 切到 B 时，A 上的 class 要清掉否则留下残影。
 let prevDropTarget = null;
+// 拖拽短语时悬停的目标分组：拖到分组上 ≠ 拖到短语间的缝隙，
+// 用 phraseDropTargetGroup 单独追踪，避免与 drop-above/below 互相打架。
+let phraseDropTargetGroup = null;
 
 function cacheDragRects(selector) {
   dragRectCache = new Map();
@@ -61,6 +69,23 @@ function clearDropIndicators() {
   lastDropAbove = null;
   prevDropTarget = null;
   dropRafPending = false;
+  // 同步把「拖到分组」的悬停高亮也清掉，避免上一轮 dragend 没走到清理分支
+  clearPhraseDropTarget();
+}
+
+// 拖短语到分组栏时给目标分组挂一个高亮 class，区别于上下插入线（drop-above/below）。
+// 用 dragover 持续刷新目标，而不是依赖 dragleave —— dragover 每像素 mousemove 都会触发，
+// 跨过 li 边界时新 dragover 自然会清掉旧的高亮，不需要单独的 dragleave 处理。
+function schedulePhraseDropTarget(groupItem) {
+  if (phraseDropTargetGroup === groupItem) return;
+  if (phraseDropTargetGroup) phraseDropTargetGroup.classList.remove('phrase-drop-target');
+  phraseDropTargetGroup = groupItem;
+  if (phraseDropTargetGroup) phraseDropTargetGroup.classList.add('phrase-drop-target');
+}
+
+function clearPhraseDropTarget() {
+  if (phraseDropTargetGroup) phraseDropTargetGroup.classList.remove('phrase-drop-target');
+  phraseDropTargetGroup = null;
 }
 
 function uid(prefix = 'id') {
@@ -81,6 +106,39 @@ function escapeHtml(str) {
   return String(str ?? '').replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[c]));
+}
+
+// 把 Electron accelerator 字符串转成展示用的「人类可读」形式：
+//   CommandOrControl → Ctrl（Windows 永远显示 Ctrl）
+//   Cmd / Command   → Ctrl（同上；本应用只在 Windows 上跑，留 Cmd 也无妨）
+// 其余（Shift / Alt / F1 / Up 等）原样保留。
+function formatAcceleratorForDisplay(acc) {
+  if (!acc) return '';
+  return String(acc).replace(/CommandOrControl|Cmd|Command/g, 'Ctrl');
+}
+
+// 把 keydown 事件转成 Electron accelerator 字符串：
+//   - 必须含至少一个修饰键（Ctrl/Alt/Shift/Meta 任一）；单独字母返回 ''（让 UI 提示）
+//   - 修饰键单独按下时 key 是 'Control'/'Shift' 等，返回 null（让用户继续按主键）
+//   - 字母统一大写；方向键 / 空格 / Enter / Esc 映射成 Electron 名字（F1~F24 同名不用映射）
+function keyEventToAccelerator(e) {
+  const modifiers = [];
+  if (e.ctrlKey || e.metaKey) modifiers.push('CommandOrControl');
+  if (e.altKey) modifiers.push('Alt');
+  if (e.shiftKey) modifiers.push('Shift');
+  if (modifiers.length === 0) return '';
+
+  let key = e.key;
+  // Electron 的键名与 DOM key 略有差异，统一映射
+  const map = {
+    'ArrowUp': 'Up', 'ArrowDown': 'Down', 'ArrowLeft': 'Left', 'ArrowRight': 'Right',
+    'Enter': 'Return', 'Escape': 'Esc',
+    ' ': 'Space',
+  };
+  if (map[key]) key = map[key];
+  else if (key.length === 1) key = key.toUpperCase();
+  // 功能键（F1~F24）DOM 直接给 'F1' 这种，Electron 接受同名，无需转换
+  return [...modifiers, key].join('+');
 }
 
 function debounce(fn, wait) {
@@ -364,6 +422,22 @@ function renderGroups() {
       dragRectCache = null;
     });
     li.addEventListener('dragover', (e) => {
+      // 拖短语到分组：把当前分组高亮成「落点」，drop 时整条移过去。
+      // dragSrcKind 是 phrase 时也要 preventDefault + dropEffect=move，否则浏览器会显示
+      // 「禁止落下」光标且 drop 不触发。
+      if (dragSrcKind === 'phrase') {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        // 拖回原分组没有意义（movePhraseToGroup 内部会 no-op），不要亮起来骗用户。
+        // 通过 phraseIndex 反查源分组，避免每帧都遍历全库。
+        const owner = phraseIndex.get(dragSrcId);
+        if (!owner || owner.group.id !== g.id) {
+          schedulePhraseDropTarget(li);
+        } else {
+          schedulePhraseDropTarget(null);
+        }
+        return;
+      }
       if (dragSrcKind !== 'group' || dragSrcId === g.id) return;
       e.preventDefault();
       const rect = dragRectCache && dragRectCache.get(li);
@@ -375,6 +449,11 @@ function renderGroups() {
     // 残留半边 drop-above/drop-below 状态）。这里只清自己——dragend 会兜底。
     li.addEventListener('drop', (e) => {
       e.preventDefault();
+      // 拖短语到分组：把该短语移动到目标分组（顶部插入，与新建短语行为一致）。
+      if (dragSrcKind === 'phrase' && dragSrcId) {
+        movePhraseToGroup(dragSrcId, g.id);
+        return;
+      }
       const rect = li.getBoundingClientRect();
       const above = (e.clientY - rect.top) < rect.height / 2;
       reorderGroups(dragSrcId, g.id, above);
@@ -626,6 +705,32 @@ function reorderPhrases(srcId, targetId, above) {
   renderPhrases();
 }
 
+// 把短语从所在分组挪到目标分组。短语拖动目前只在「全部」视图下启用（renderPhrases 里
+// draggable = currentFilter === 'all' && !searchQuery），所以源分组一定等于当前活动分组；
+// 但仍走 findPhraseOwner 兜底，避免以后放开拖拽限制（比如允许收藏视图也拖）时漏改。
+// 选中态不修正：跨组移动后原列表里这条短语已经不存在，selectedPhraseIndex 重新渲染时会
+// 自然失效（指向新索引），下次 moveSelection 会再校正。
+function movePhraseToGroup(srcPhraseId, targetGroupId) {
+  const owner = findPhraseOwner(srcPhraseId);
+  if (!owner) return;
+  // 拖回自己所在的分组：无操作（drop 仍然触发，只是不会改变数据）。
+  if (owner.group.id === targetGroupId) return;
+  const target = data.groups.find((g) => g.id === targetGroupId);
+  if (!target) return;
+  owner.group.phrases.splice(owner.index, 1);
+  // 顶部插入：与「新建短语」位置策略一致，用户挪完立刻就能在最上方看到。
+  target.phrases.unshift(owner.phrase);
+  // 当前活动分组里少了一条短语时，索引可能越界，重置选中更安全
+  if (selectedPhraseIndex >= 0 && data.activeGroupId === owner.group.id) {
+    const visible = visiblePhrases();
+    if (selectedPhraseIndex >= visible.length) selectedPhraseIndex = -1;
+  }
+  rebuildPhraseIndex();
+  persist();
+  renderAll();
+  showToast(`已移动到「${target.name}」`, 'success');
+}
+
 function renderAll() {
   renderGroups();
   renderPhrases();
@@ -658,6 +763,11 @@ function toggleQuickFilter(filter) {
 }
 
 const renderPhrasesDebounced = debounce(() => renderPhrases(), 80);
+
+// 严格白名单：data.json 被外部脚本写脏（"Paste" / "paste " / "xxx"）时落到 paste
+// 是安全的，但显式白名单比"未知值降级到 paste"读起来更明确。提到模块顶层避免
+// actOnSelected 每次调用都重新创建数组。
+const ALLOWED_CLICK_ACTIONS = ['paste', 'copy'];
 
 // 搜索 query 的唯一写入入口:IME 上屏、英文输入、点清空按钮都走这里,
 // 避免散落在多处的赋值 / 隐藏 toggle 出现状态不一致。
@@ -706,9 +816,6 @@ function actOnSelected() {
     item.classList.add('fired');
     setTimeout(() => item.classList.remove('fired'), 700);
   }
-  // 严格白名单：data.json 被外部脚本写脏（"Paste" / "paste " / "xxx"）时落到 paste
-  // 是安全的，但显式白名单比"未知值降级到 paste"读起来更明确。
-  const ALLOWED_CLICK_ACTIONS = ['paste', 'copy'];
   const act = ALLOWED_CLICK_ACTIONS.includes(data.settings && data.settings.clickAction)
     ? data.settings.clickAction : 'paste';
   if (act === 'copy') copyPhrase(p);
@@ -736,8 +843,16 @@ const persist = (() => {
     if (!pending || !window.api.saveDataSync) return;
     const snapshot = pending;
     pending = null;
-    try { window.api.saveDataSync(snapshot); }
-    catch (e) { console.error('saveDataSync failed:', e); }
+    // pagehide / beforeunload 时 showToast 不会展示（DOM 即将销毁），
+    // 但主进程返回的错误至少要在控制台留下诊断信息，方便事后排障。
+    try {
+      const r = window.api.saveDataSync(snapshot);
+      if (r && r.ok === false) {
+        console.error('saveDataSync failed:', r.error || 'unknown');
+      }
+    } catch (e) {
+      console.error('saveDataSync failed:', e);
+    }
   };
   const fn = (next) => {
     // IPC invoke 已经走 structured clone，主进程拿到的就是独立副本。
@@ -762,23 +877,20 @@ function recordRecent(phraseId) {
   // 用 phraseIndex 索引，O(1) 拿到 group / phrase 对象，避免每个粘贴都遍历全库。
   const hit = phraseIndex.get(phraseId);
   const target = hit ? hit.phrase : null;
-  if (!target) return false;
+  if (!target) return;
 
   // useCount 与「最近」列表是独立的统计概念：即使关闭了最近记录，
   // 「已用 N 次」徽章也应当照常增长。早期实现把这两件事绑在一起，
   // 关掉最近记录后徽章也跟着停了，对用户来说是隐藏行为变化。
-  const before = target.useCount || 0;
-  target.useCount = before + 1;
+  target.useCount = (target.useCount || 0) + 1;
 
   // 「最近」列表的更新受用户偏好控制。
-  if (data.settings && data.settings.recordRecent === false) return before === 0;
+  if (data.settings && data.settings.recordRecent === false) return;
 
   const idx = data.recent.findIndex((r) => r.id === phraseId);
   if (idx >= 0) data.recent.splice(idx, 1);
   data.recent.unshift({ id: phraseId, ts: Date.now() });
   if (data.recent.length > 50) data.recent.length = 50;
-  // 0 -> 1 是触发「已用 N 次」徽章首次出现的临界态，调用方据此判断要不要重渲染。
-  return before === 0;
 }
 
 async function pastePhrase(phrase) {
@@ -1135,6 +1247,11 @@ async function addGroup() {
   data.groups.push(g);
   data.activeGroupId = g.id;
   currentFilter = 'all';
+  // 清空搜索：新建的分组必然是空的，旧搜索词会让 empty-hint 走「没有匹配」分支，
+  // 隐藏「添加第一条短语」按钮，用户得手动清搜索框才能继续 —— 体验断裂。
+  const sInput = $('search-input');
+  if (sInput) sInput.value = '';
+  setSearchQuery('');
   selectedPhraseIndex = -1;
   persist();
   renderAll();
@@ -1171,6 +1288,11 @@ async function deleteGroup(target = null) {
   // 只在被删的是当前激活分组时才切换激活分组，避免误改上下文
   if (data.activeGroupId === group.id) {
     data.activeGroupId = data.groups[0].id;
+    // 清空搜索：切换激活分组是上下文变化，旧搜索词可能让新激活的分组
+    // 显示「没有匹配」而不是正常列表，用户得手动清搜索框才能继续。
+    const sInput = $('search-input');
+    if (sInput) sInput.value = '';
+    setSearchQuery('');
     selectedPhraseIndex = -1;
   }
   rebuildPhraseIndex();
@@ -1347,8 +1469,21 @@ async function applyImportedData(incoming) {
       'success'
     );
   }
+  // 兜底校验：合并模式下用户的 activeGroupId 仍指向旧分组（merge 不会删除），
+  // 替换模式理论上 groups[0]?.id 已指向新数据，但万一导入数据本身有问题
+  // （id 类型异常等）也兜底回到第一个分组。
+  if (!data.groups.find((g) => g.id === data.activeGroupId)) {
+    data.activeGroupId = data.groups[0]?.id || null;
+  }
   selectedPhraseIndex = -1;
   currentFilter = 'all';
+  // 替换模式下清空搜索：旧搜索词在全新数据里大概率 0 命中，挡住正常浏览；
+  // 合并模式下保留搜索：用户大概率是想用搜索词找刚合并进来的新短语。
+  if (mode === '替换') {
+    const sInput = $('search-input');
+    if (sInput) sInput.value = '';
+    setSearchQuery('');
+  }
   // 导入后整张短语库都变了，索引必须重建
   rebuildPhraseIndex();
   // 导入必须同步刷盘，原因有两个：
@@ -1356,8 +1491,14 @@ async function applyImportedData(incoming) {
   //    走异步 persist() → 200ms 防抖窗口里 scheduleSaveBounds 仍可能用旧快照覆盖磁盘
   // 2. beforeunload 时已经走过 flushSync，再走异步 persist 不会更快落盘
   if (window.api.saveDataSync) {
-    try { window.api.saveDataSync(data); }
-    catch (e) { console.error('saveDataSync failed:', e); }
+    try {
+      const r = window.api.saveDataSync(data);
+      if (r && r.ok === false) {
+        showToast(`导入后保存失败：${r.error || '未知错误'}`, 'error');
+      }
+    } catch (e) {
+      showToast(`导入后保存失败：${e.message || e}`, 'error');
+    }
   } else {
     persist();
   }
@@ -1373,6 +1514,10 @@ function togglePanel(id, show) {
     if (window.api.setTyping) window.api.setTyping(true);
     if (id === 'settings-panel') refreshSettingsUI();
   } else {
+    // 关闭设置面板时若还在录制态 → 一并退出，避免面板隐藏后用户看不到录制 UI、
+    // 不知道按了什么键其实被记录了。stopRecordShortcut 是 function declaration，
+    // 写在文件后面也能正常 hoist 引用。
+    if (id === 'settings-panel' && isRecordingShortcut) stopRecordShortcut();
     if (isAnyPanelOpen()) return;
     if (window.api.setTyping) window.api.setTyping(false);
   }
@@ -1416,6 +1561,24 @@ function refreshSettingsUI() {
   if (pathEl && window.api.getDataPath) {
     window.api.getDataPath().then((p) => { if (p) pathEl.textContent = p; });
   }
+  // 开机自启动：以操作系统状态（注册表 / macOS 登录项）为唯一真相。
+  // 不依赖 data.settings —— 外部修改（用户手动改注册表、卸载时勾选等）也能即时反映。
+  // OS 调用失败时回退到 data.settings.autoLaunch，仍然是个有意义的 UI 缓存。
+  // 注意：失败时主进程会返回 { ok: false, enabled: false }，不能用 typeof === 'boolean'
+  // 来判断 —— 否则会把 failure 的 enabled:false 当真，把用户上次保存的开启状态覆盖掉。
+  const autoLaunch = $('auto-launch-toggle');
+  if (autoLaunch && window.api.getAutoLaunch) {
+    window.api.getAutoLaunch().then((res) => {
+      if (res && res.ok === true && typeof res.enabled === 'boolean') {
+        autoLaunch.checked = res.enabled;
+      } else if (s.autoLaunch != null) {
+        autoLaunch.checked = !!s.autoLaunch;
+      }
+    });
+  }
+  // 全局快捷键：每次打开面板都拉一次最新值（异步 IPC，成本可忽略）。
+  // 拉到后写进 <kbd>；HTML 里硬编码的占位「Ctrl+Shift+V」只是兜底。
+  refreshShortcutDisplay();
 }
 
 function refreshRecentDesc() {
@@ -1443,6 +1606,97 @@ function refreshUseCountDesc() {
   }
   if (total === 0) desc.textContent = '还没有使用记录';
   else desc.textContent = `已累计 ${total} 次使用（${countedPhrases} 条短语）`;
+}
+
+// 把主进程的当前全局快捷键值刷到设置面板的 <kbd> 上。
+// IPC 是异步的，IPC 返回前 HTML 占位符「Ctrl+Shift+V」会被用户看到，
+// 几乎无感知；这样避免在 HTML 里假设默认值导致主进程没启动时显示错。
+function refreshShortcutDisplay() {
+  if (!window.api.getGlobalToggle) return;
+  window.api.getGlobalToggle().then((acc) => {
+    const display = $('shortcut-display');
+    if (display && acc) display.textContent = formatAcceleratorForDisplay(acc);
+  });
+}
+
+/* ==================== 全局快捷键录制 ==================== */
+// 录制流程的状态机：
+//   startRecordShortcut() → 进入录制态（按钮高亮、kbd 脉冲）
+//   stopRecordShortcut()  → 退出录制态（恢复原 UI）
+//   applyRecordedShortcut() / resetShortcut() → IPC 写盘 + 重注册，更新 <kbd>
+//
+// 实际的 keydown 处理在 setupKeyboardShortcuts 顶部（优先级最高）。
+// 单独抽函数是因为按钮点击和 keydown 都要触发停止，逻辑共享更稳。
+
+function startRecordShortcut() {
+  if (isRecordingShortcut) {
+    // 再点一次「录制」按钮 → 等价于按 Esc 取消
+    stopRecordShortcut();
+    return;
+  }
+  isRecordingShortcut = true;
+  recordInvalidShown = false;
+  const display = document.querySelector('.shortcut-display');
+  if (display) display.classList.add('recording');
+  const btn = $('btn-record-shortcut');
+  if (btn) {
+    btn.classList.add('recording');
+    btn.textContent = '按 Esc 取消';
+  }
+}
+
+function stopRecordShortcut() {
+  isRecordingShortcut = false;
+  const display = document.querySelector('.shortcut-display');
+  if (display) display.classList.remove('recording');
+  const btn = $('btn-record-shortcut');
+  if (btn) {
+    btn.classList.remove('recording');
+    btn.textContent = '录制';
+  }
+}
+
+async function applyRecordedShortcut(acc) {
+  try {
+    const res = await window.api.setGlobalToggle(acc);
+    if (res && res.ok) {
+      const shown = formatAcceleratorForDisplay(res.accelerator || acc);
+      const display = $('shortcut-display');
+      if (display) display.textContent = shown;
+      // 同步本地 data.settings.shortcuts：主进程已经把新值写盘，但渲染层 data 对象
+      // 是后保存的引用，不主动更新的话下次 persist() 会把陈旧的 settings 整体覆盖回去，
+      // 快捷键这条改动就丢了。和 autoLaunch 处理方式一致。
+      if (!data.settings) data.settings = {};
+      if (!data.settings.shortcuts) data.settings.shortcuts = {};
+      data.settings.shortcuts.globalToggle = res.accelerator || acc;
+      showToast(res.unchanged ? '已是当前快捷键' : `已更新：${shown}`, 'success');
+    } else {
+      showToast(`快捷键更新失败：${(res && res.error) || '未知错误'}`, 'error');
+    }
+  } catch (err) {
+    showToast(`快捷键更新失败：${err.message || err}`, 'error');
+  }
+}
+
+async function resetShortcut() {
+  // 默认值与 main.js 的 DEFAULT_GLOBAL_TOGGLE 保持一致：
+  // 通过 IPC 让主进程统一处理写盘 + 重注册，渲染层只负责 UI 反馈
+  try {
+    const res = await window.api.setGlobalToggle('CommandOrControl+Shift+V');
+    if (res && res.ok) {
+      const display = $('shortcut-display');
+      if (display) display.textContent = 'Ctrl+Shift+V';
+      // 同 applyRecordedShortcut：本地缓存要同步，否则下次 persist 会回滚
+      if (!data.settings) data.settings = {};
+      if (!data.settings.shortcuts) data.settings.shortcuts = {};
+      data.settings.shortcuts.globalToggle = 'CommandOrControl+Shift+V';
+      showToast('已恢复默认', 'success');
+    } else {
+      showToast(`恢复默认失败：${(res && res.error) || '未知错误'}`, 'error');
+    }
+  } catch (err) {
+    showToast(`恢复默认失败：${err.message || err}`, 'error');
+  }
 }
 
 function initSettings() {
@@ -1542,6 +1796,38 @@ function initSettings() {
       showToast('已清空使用统计', 'success');
     });
   }
+  // 开机自启动：开关状态由 OS 写入（注册表 / macOS 登录项），
+  // 这里只负责发 IPC + 把 OS 返回值持久化到 data.settings 作为下次启动的 UI 回退。
+  // OS 写入失败要把 UI 翻转回原值，避免显示与实际状态不一致。
+  const autoLaunch = $('auto-launch-toggle');
+  if (autoLaunch) {
+    autoLaunch.addEventListener('change', async () => {
+      const want = autoLaunch.checked;
+      if (!window.api.setAutoLaunch) return;
+      let res;
+      try {
+        res = await window.api.setAutoLaunch(want);
+      } catch (e) {
+        res = { ok: false, error: e.message || String(e) };
+      }
+      if (!res || res.ok !== true) {
+        autoLaunch.checked = !want;
+        showToast(`设置开机自启动失败：${(res && res.error) || '未知错误'}`, 'error');
+        return;
+      }
+      if (!data.settings) data.settings = {};
+      data.settings.autoLaunch = res.enabled;
+      persist();
+      showToast(res.enabled ? '已开启：开机自启动' : '已关闭：开机自启动', 'info');
+    });
+  }
+  // 全局快捷键录制 / 恢复默认。
+  // 录制按钮在点第二次时走 startRecordShortcut 内部的 toggle 分支退出录制。
+  // 恢复默认直接发默认 accelerator，IPC 那边会做去重 + 重注册。
+  const recordBtn = $('btn-record-shortcut');
+  if (recordBtn) recordBtn.addEventListener('click', startRecordShortcut);
+  const resetShortcutBtn = $('btn-reset-shortcut');
+  if (resetShortcutBtn) resetShortcutBtn.addEventListener('click', resetShortcut);
 }
 
 /* ==================== 全局键盘快捷键 ====================
@@ -1557,6 +1843,34 @@ function initSettings() {
 //    通过 visiblePhrases() 拿到的列表，搜索 / 过滤器都会影响它。 */
 function setupKeyboardShortcuts() {
   document.addEventListener('keydown', (e) => {
+    /* ====== 0. 录制全局快捷键（最高优先级） ======
+       放在所有分支最前面：录制期间用户的按键不能被任何弹窗逻辑吞掉，
+       也不能让 Ctrl+字母被现有 Ctrl+N/G/B/F/, 系列吃掉。 */
+    if (isRecordingShortcut) {
+      // Esc 取消录制
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        stopRecordShortcut();
+        return;
+      }
+      // 修饰键单独按下 → 继续等待主键
+      if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return;
+      // 吞掉默认行为：方向键滚动、F1 帮助、Tab 切焦点 等在录制态下都不该触发
+      e.preventDefault();
+      const acc = keyEventToAccelerator(e);
+      if (!acc) {
+        // 没有修饰键（单按字母 / 数字 / 符号）→ 一次性 toast 提示，避免每按一个键都刷
+        if (!recordInvalidShown) {
+          showToast('需要包含至少一个修饰键（Ctrl / Alt / Shift）', 'info');
+          recordInvalidShown = true;
+        }
+        return;
+      }
+      stopRecordShortcut();
+      applyRecordedShortcut(acc);
+      return;
+    }
+
     const modalOpen = !$('modal').classList.contains('hidden');
     const promptOpen = !$('prompt-modal').classList.contains('hidden');
     const settingsOpen = !$('settings-panel').classList.contains('hidden');

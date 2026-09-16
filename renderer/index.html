@@ -326,6 +326,37 @@
       </div>
       <div class="panel-body">
         <div class="setting-group">
+          <div class="setting-group-title">通用</div>
+
+          <div class="setting-row">
+            <div class="setting-row-text">
+              <div class="setting-label">开机自启动</div>
+              <div class="setting-desc">登录 Windows 时自动启动（窗口默认隐藏在托盘）</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="auto-launch-toggle" />
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="setting-group">
+          <div class="setting-group-title">快捷键</div>
+
+          <div class="setting-row">
+            <div class="setting-row-text">
+              <div class="setting-label">全局唤出 / 收起</div>
+              <div class="setting-desc">在系统任意位置唤出或收起悬浮窗；与其它软件冲突时可改</div>
+            </div>
+            <div class="shortcut-display">
+              <kbd id="shortcut-display">Ctrl+Shift+V</kbd>
+              <button class="text-btn" id="btn-record-shortcut" title="录制新快捷键">录制</button>
+              <button class="text-btn" id="btn-reset-shortcut" title="恢复为 Ctrl+Shift+V">恢复默认</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="setting-group">
           <div class="setting-group-title">外观</div>
 
           <div class="setting-row">

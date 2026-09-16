@@ -601,6 +601,16 @@ body[data-theme="light"] .icon-btn.toggle-on:hover {
   box-shadow: 0 2px 0 var(--accent);
 }
 
+/* 把短语拖到分组上时整条高亮，区别于 drop-above/below 的「上下插入线」。
+ * 视觉上沿用 .active 的着色但多一层 inset 描边，让用户立刻意识到「整条分组是落点」，
+ * 而不是「在这里上下插入」。 */
+.group-item.phrase-drop-target {
+  background: var(--accent-subtle);
+  border-color: var(--accent);
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
 .group-item .name {
   flex: 1;
   overflow: hidden;
@@ -1777,6 +1787,60 @@ body[data-theme="light"] .panel-backdrop {
 .setting-actions {
   display: flex;
   gap: 4px;
+}
+
+/* ===== 快捷键录制行 ===== */
+/* 视觉上与 .setting-actions 同宽，但 kbd 用衬底框表现「键帽」感，
+   两个按钮紧跟在后，整体一行不换。 */
+.shortcut-display {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 模仿 VSCode 等 IDE 里的键帽样式：
+   - 等宽字体 + 浅灰底 + 圆角，让「Ctrl+Shift+V」一眼可读
+   - 不设置固定 min-width：组合键长度不一（Ctrl+Shift+V vs F1），硬编码会留空 */
+kbd {
+  display: inline-block;
+  padding: 3px 8px;
+  font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+  line-height: 1.4;
+  white-space: nowrap;
+  user-select: none;
+  transition: background var(--duration-fast) var(--ease),
+              border-color var(--duration-fast) var(--ease);
+}
+
+/* 录制态：kbd 底色变 accent，提示「现在按的键会被接收」，
+   再叠加一个轻微脉冲，让用户意识到等待状态中。 */
+.shortcut-display.recording kbd {
+  background: var(--accent-subtle);
+  border-color: var(--accent);
+  color: var(--accent);
+  animation: kbd-pulse 1.4s var(--ease) infinite;
+}
+
+@keyframes kbd-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--accent-subtle); }
+  50%      { box-shadow: 0 0 0 4px var(--accent-subtle); }
+}
+
+/* 录制按钮在录制态下变成「取消」语义：accent 底 + 白字 */
+.text-btn.recording {
+  background: var(--accent);
+  color: #fff;
+}
+
+.text-btn.recording:hover {
+  background: var(--accent-hover);
+  color: #fff;
 }
 
 /* 设置面板里的可点击链接（关于区开发者链接等）：

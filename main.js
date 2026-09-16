@@ -102,9 +102,9 @@ const isDev = !app.isPackaged;
 // 注意：userData 路径依赖 app 初始化状态，在 whenReady 里再解析更稳妥
 let userDataPath = null;
 
-// 构建标记：用户跑应用时看到这个 banner 就知道是含本次搜索框修复的最新代码。
-// 调整搜索框「无法输入」相关问题时同步修改此字符串。
-const BUILD_TAG = 'always-on-top-toggle-2026-09-11';
+// 构建标记：用户跑应用时看到这个 banner 就知道是含本次「快捷键自定义」的最新代码。
+// 调整 settings 面板里的快捷键录制 / 恢复默认相关问题时同步修改此字符串。
+const BUILD_TAG = 'shortcut-customize-2026-09-16';
 console.log(`[quick-paste] build: ${BUILD_TAG}`);
 
 let mainWindow = null;
@@ -115,6 +115,13 @@ let isQuitting = false;
 // 主进程持有「真相源」：窗口本身可能已被用户从 Windows 任务栏右键菜单里改过，
 // 但渲染进程保存的偏好才是用户期望的，启动时用它覆盖回去。
 let alwaysOnTop = true;
+
+// 开机自启动触发的本次启动：默认 false。
+// `app.whenReady` 里会调 app.getLoginItemSettings() 检测本次启动是否来自登录项，
+// 如果是（wasOpenedAtLogin / wasOpenedAsHidden 任一为真），
+// 窗口就不在 ready-to-show 自动弹出，保持隐藏在托盘里——
+// 避免用户每次登录 Windows 都被迫看到一个悬浮窗跳出来。
+let startedAtLogin = false;
 
 // 上次前台窗口句柄（用于粘贴前主动切回）
 let lastFgHwnd = null;
@@ -288,6 +295,10 @@ function applyAlwaysOnTop() {
 // 改为：缓存最近一次由 data:save 写入的完整数据快照，更新窗口位置时直接复用这份
 // 快照，绝不再从盘读。
 let cachedDataSnapshot = null;
+// 启动期一次性读盘快照：createWindow 读 alwaysOnTop、whenReady 读 savedAcc
+// 原本各调一次 loadData —— 整份 JSON 解析 + 字段容错走两遍，对几百条短语的小库
+// 都能感知到。合到一处，createWindow/applyGlobalShortcut 直接读这里的字段。
+let bootDataSnapshot = null;
 let saveBoundsTimer = null;
 function scheduleSaveBounds() {
   if (saveBoundsTimer) clearTimeout(saveBoundsTimer);
@@ -329,12 +340,14 @@ function createWindow() {
   };
 
   // 启动时把磁盘上的 alwaysOnTop 偏好读进来；
-  // 旧数据没这个字段时 loadData 已经容错处理，settings 至少是 {}，所以取默认值 true 即可。
-  try {
-    const persisted = loadData();
-    const savedAlways = persisted && persisted.settings && persisted.settings.alwaysOnTop;
+  // 复用 whenReady 里已经读过的 bootDataSnapshot，避免再 loadData 一遍（几百条短语
+  // 时 JSON 解析走两遍会感知到；旧数据没这个字段时 loadData 已经容错，bootDataSnapshot
+  // 至少有 settings = {}，取默认值 true 即可）。
+  if (bootDataSnapshot) {
+    const savedAlways = bootDataSnapshot.settings && bootDataSnapshot.settings.alwaysOnTop;
     alwaysOnTop = savedAlways === undefined ? true : !!savedAlways;
-  } catch {
+  } else {
+    // 兜底：bootDataSnapshot 没拿到（loadData 抛错被吞）→ 默认开启
     alwaysOnTop = true;
   }
 
@@ -380,7 +393,9 @@ function createWindow() {
   mainWindow.on('resize', scheduleSaveBounds);
 
   mainWindow.once('ready-to-show', () => {
-    showFloating();
+    // 开机自启动触发的启动 → 窗口保持隐藏在托盘里，
+    // 用户按 Ctrl+Shift+V 或点托盘图标才会显示，避免每次登录都跳出来。
+    if (!startedAtLogin) showFloating();
   });
 
   // 关闭按钮 → 最小化到托盘，而不是退出
@@ -646,10 +661,10 @@ ipcMain.handle('data:save', (_, data) => {
   if (res && res.ok) {
     // 维护一份最近一次写入的全量数据快照。scheduleSaveBounds 用它来同步窗口位置，
     // 不再从盘读 —— 避免和渲染层的并发保存产生覆盖。
-    // 浅拷贝即可：data 来自渲染进程 IPC structured clone、withOwnedSettings 也已经
-    // 浅拷贝过 settings，本进程内部无须再 JSON.parse(JSON.stringify(...)) 深拷贝一次。
-    // 后续 scheduleSaveBounds 会改写 settings.windowBounds，那块新对象也独立。
-    cachedDataSnapshot = { ...enriched, settings: { ...enriched.settings } };
+    // enriched 是 withOwnedSettings 返回的新对象（顶层 + settings 都已是新对象），
+    // 直接复用即可；后续 scheduleSaveBounds 会改写 cachedDataSnapshot.settings.windowBounds
+    // 为新对象，不会影响 enriched。
+    cachedDataSnapshot = enriched;
     // data:save 刚刚成功落盘，待处理的窗口位置合并任务无意义了 —— 下一次
     // move/resize 会重新 schedule。提前清掉避免它再用一份过期快照覆盖磁盘。
     if (saveBoundsTimer) { clearTimeout(saveBoundsTimer); saveBoundsTimer = null; }
@@ -661,7 +676,7 @@ ipcMain.on('data:saveSync', (e, data) => {
   const enriched = withOwnedSettings(data);
   const res = saveData(enriched);
   if (res && res.ok) {
-    cachedDataSnapshot = { ...enriched, settings: { ...enriched.settings } };
+    cachedDataSnapshot = enriched;
     if (saveBoundsTimer) { clearTimeout(saveBoundsTimer); saveBoundsTimer = null; }
   }
   e.returnValue = res;
@@ -767,6 +782,45 @@ ipcMain.handle('window:setOpacity', (_, value) => {
 });
 ipcMain.handle('app:quit', () => { isQuitting = true; app.quit(); });
 
+// 开机自启动：读写由 app.setLoginItemSettings / getLoginItemSettings 代理。
+//   Windows：写到 HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run，
+//            openAsHidden=true 时执行参数追加 --hidden；
+//   macOS：注册到「系统设置 → 通用 → 登录项」；
+//   Linux：在 ~/.config/autostart/ 下放 .desktop 文件（仅支持 openAtLogin）。
+//
+// 启动后用 getLoginItemSettings().wasOpenedAsHidden / wasOpenedAtLogin 判断本次是否被登录项拉起，
+// 是的话窗口留在托盘里不弹（见 ready-to-show 分支）。
+ipcMain.handle('app:getAutoLaunch', () => {
+  try {
+    const ls = app.getLoginItemSettings();
+    return { ok: true, enabled: !!(ls && ls.openAtLogin) };
+  } catch (e) {
+    // 拿不到 OS 状态时回退到 false，渲染层展示关闭态；用户点过开关后下次刷新就会以 OS 为准。
+    console.error('getAutoLaunch error:', e);
+    return { ok: false, enabled: false, error: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('app:setAutoLaunch', (_, enabled) => {
+  const want = !!enabled;
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: want,
+      // Windows 会把这个值翻译成执行参数里的 --hidden，启动时被 getLoginItemSettings 读到；
+      // macOS 会让应用在登录时以隐藏状态启动。
+      // Linux 忽略此字段，但写一个稳定的值对 API 一致性无害。
+      openAsHidden: true,
+    });
+    return { ok: true, enabled: want };
+  } catch (e) {
+    // dev 模式下（isPackaged=false）调用此 API 经常失败：electron.exe 路径在不同机器上不一致，
+    // 注册表项会写到错位置；不过 `npm start` 启动的用户本来也不会真的想开机自启。
+    // 把异常吞掉 + 返回错误，让渲染层弹 toast 提示。
+    console.error('setAutoLaunch error:', e);
+    return { ok: false, enabled: false, error: e.message || String(e) };
+  }
+});
+
 // 渲染进程要打字了（打开编辑弹窗）→ 临时让窗口获得焦点；
 // 关掉弹窗后只把焦点还给原来的目标窗口，窗口本身仍保持可聚焦
 // （搜索框需要持续可用；如果这里 setNoActivate(true) 会让搜索框跟着失能）。
@@ -847,28 +901,129 @@ ipcMain.handle('data:export', async () => {
   }
 });
 
+// 渲染层获取当前已注册的全局快捷键（设置面板首次打开时显示）
+ipcMain.handle('shortcuts:getGlobalToggle', () => currentGlobalShortcut);
+
+// 修改全局快捷键：渲染层在设置面板里点「录制」拿到新组合键后调用。
+//   1. 校验格式：必须是非空字符串且至少有一个 `+`（modifier + key 的最小形态）
+//   2. 落盘：复用 withOwnedSettings → saveData 链路，确保 windowBounds 跟着更新；
+//      settings.shortcuts 是新字段，withOwnedSettings 只改 windowBounds、不动其它字段，
+//      所以 spread 后透传即可。
+//   3. 注册新值到系统：失败时回滚旧值；注册成功才更新 currentGlobalShortcut。
+ipcMain.handle('shortcuts:setGlobalToggle', (_, accelerator) => {
+  if (typeof accelerator !== 'string' || !accelerator.trim() || !accelerator.includes('+')) {
+    return { ok: false, error: '快捷键格式无效' };
+  }
+  const acc = accelerator.trim();
+  // 与当前一致：直接返回成功，避免无意义的 unregister/register 抖动
+  if (acc === currentGlobalShortcut) return { ok: true, accelerator: acc, unchanged: true };
+
+  // 落盘先于 register：注册失败时数据已存，但当前快捷键仍是旧值。
+  // 用户重启后会从 settings.shortcuts.globalToggle 再尝试一次（虽然大概率仍失败）。
+  // 如果反过来：register 成功但落盘失败，重启后快捷键回到旧值——这条更糟糕，
+  // 用户明明看到界面变了，重启又被回滚。所以先写盘、再注册。
+  try {
+    const current = loadData();
+    const newSettings = {
+      ...(current.settings || {}),
+      shortcuts: { ...((current.settings && current.settings.shortcuts) || {}), globalToggle: acc },
+    };
+    const enriched = withOwnedSettings({ ...current, settings: newSettings });
+    const res = saveData(enriched);
+    if (!res || !res.ok) return { ok: false, error: (res && res.error) || '保存失败' };
+    cachedDataSnapshot = enriched;
+    if (saveBoundsTimer) { clearTimeout(saveBoundsTimer); saveBoundsTimer = null; }
+  } catch (e) {
+    console.error('save shortcut error:', e);
+    return { ok: false, error: e.message || String(e) };
+  }
+
+  // 尝试注册到系统。失败 → 数据已写盘但快捷键未切换；返回失败让 UI 提示用户，
+  // 但用户重启时会再次尝试（此时如果那个占用程序退了就成功了）。
+  const ok = applyGlobalShortcut(acc);
+  if (!ok) {
+    return { ok: false, error: '快捷键已被其它应用占用，请换一个', accelerator: acc };
+  }
+  return { ok: true, accelerator: acc };
+});
+
+/* ==================== 全局快捷键 ==================== */
+// 默认唤出 / 收起快捷键。注册来源不再写死：读 data.settings.shortcuts.globalToggle，
+// 没有或格式异常时回落到这里。用户在设置面板改了之后通过 IPC 重注册。
+const DEFAULT_GLOBAL_TOGGLE = 'CommandOrControl+Shift+V';
+// 跟踪「当前已注册到系统」的那一个。change 时需要先 unregister 掉旧的再 register 新的，
+// 否则旧组合会一直占着直到进程退出。启动时会被真实注册值覆盖。
+let currentGlobalShortcut = DEFAULT_GLOBAL_TOGGLE;
+
+// 重新注册全局快捷键：
+//   1. 注销旧的（可能是默认值，也可能是用户改过的），避免旧组合一直占着系统
+//   2. register 新值；失败（被其它程序占用）时回滚到旧值，保证至少有一个组合能用
+//   3. 整个流程不抛错——注册失败时主进程只 warn，应用照常运行（README 86 行约定）
+function applyGlobalShortcut(accelerator) {
+  // 注销旧值：可能从来没注册成功过，catch 兜底
+  if (currentGlobalShortcut && currentGlobalShortcut !== accelerator) {
+    try { globalShortcut.unregister(currentGlobalShortcut); } catch {}
+  }
+  // 兜底：unregisterAll 清场，避免旧注册残留；本应用目前只有这一条全局快捷键，安全
+  try { globalShortcut.unregisterAll(); } catch {}
+
+  try {
+    const ok = globalShortcut.register(accelerator, () => toggleWindow());
+    if (!ok) {
+      console.warn('全局快捷键注册失败，可能被其它应用占用:', accelerator);
+      // 回滚：旧值能注册就还原
+      try { globalShortcut.register(currentGlobalShortcut, () => toggleWindow()); } catch {}
+      return false;
+    }
+    currentGlobalShortcut = accelerator;
+    return true;
+  } catch (e) {
+    console.warn('globalShortcut.register error:', e);
+    try { globalShortcut.register(currentGlobalShortcut, () => toggleWindow()); } catch {}
+    return false;
+  }
+}
+
 /* ==================== 生命周期 ==================== */
-// 全局快捷键：Ctrl+Shift+V 在系统任何地方都能唤出 / 收起悬浮窗
-// README / 帮助面板里都列着这条快捷键，缺了等于核心交互路径断了
-const GLOBAL_TOGGLE_SHORTCUT = 'CommandOrControl+Shift+V';
 
 app.whenReady().then(() => {
   userDataPath = path.join(app.getPath('userData'), 'data.json');
+
+  // 启动期一次性读盘：createWindow 读 alwaysOnTop、applyGlobalShortcut 读 savedAcc，
+  // 共用这一份解析过的数据，避免 JSON 解析 + 字段容错走两遍。
+  try {
+    bootDataSnapshot = loadData();
+  } catch {
+    bootDataSnapshot = null;
+  }
+
+  // 检测本次启动是否由「开机自启动」触发：
+  // wasOpenedAsHidden 表示 setLoginItemSettings({openAsHidden:true}) 给执行参数加了 --hidden；
+  // wasOpenedAtLogin 是更广义的判断（macOS 等）。
+  // 二者任一为真都说明我们是被登录项拉起来的，此时不要自动弹出悬浮窗。
+  try {
+    const ls = app.getLoginItemSettings();
+    startedAtLogin = !!(ls && (ls.wasOpenedAtLogin || ls.wasOpenedAsHidden));
+  } catch {}
+
   createWindow();
   createTray();
 
   // 启动前台窗口跟踪
   startForegroundTracking();
 
-  // 注册全局唤出快捷键。register 失败通常是别的程序占了这个组合键
-  // （比如某些截图工具也用 Ctrl+Shift+V）——失败就静默退化到只通过托盘点击唤出，
-  // 不阻塞应用启动。
-  try {
-    const ok = globalShortcut.register(GLOBAL_TOGGLE_SHORTCUT, () => toggleWindow());
-    if (!ok) console.warn('全局快捷键注册失败，可能被其它应用占用:', GLOBAL_TOGGLE_SHORTCUT);
-  } catch (e) {
-    console.warn('globalShortcut.register error:', e);
+  // 注册全局唤出快捷键：优先用用户改过的值，没有或格式异常时用默认值。
+  // 复用 bootDataSnapshot，省一次 loadData。
+  let savedAcc = DEFAULT_GLOBAL_TOGGLE;
+  if (bootDataSnapshot) {
+    const fromSettings = bootDataSnapshot.settings
+      && bootDataSnapshot.settings.shortcuts
+      && bootDataSnapshot.settings.shortcuts.globalToggle;
+    if (typeof fromSettings === 'string' && fromSettings.trim() && fromSettings.includes('+')) {
+      savedAcc = fromSettings;
+    }
   }
+  applyGlobalShortcut(savedAcc);
 });
 
 app.on('will-quit', () => {

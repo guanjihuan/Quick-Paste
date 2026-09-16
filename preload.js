@@ -38,4 +38,13 @@ contextBridge.exposeInMainWorld('api', {
 
   // 导出（保存对话框需要主进程；导入走隐藏 file input，无需 IPC）
   exportData: () => ipcRenderer.invoke('data:export'),
+
+  // 开机自启动：读写由主进程代理 app.setLoginItemSettings / getLoginItemSettings。
+  // Windows 上对应注册表 Run 项，macOS 对应「登录项」。
+  setAutoLaunch: (enabled) => ipcRenderer.invoke('app:setAutoLaunch', !!enabled),
+  getAutoLaunch: () => ipcRenderer.invoke('app:getAutoLaunch'),
+
+  // 全局快捷键：读当前 / 改写并重注册（设置面板录制按钮调用）
+  getGlobalToggle: () => ipcRenderer.invoke('shortcuts:getGlobalToggle'),
+  setGlobalToggle: (acc) => ipcRenderer.invoke('shortcuts:setGlobalToggle', acc),
 });
