@@ -110,7 +110,7 @@ npm run dist       # 打包 NSIS 安装包到 dist/
 └── README.md
 ```
 
-`npm run dist` 会用 `electron-builder` 走 NSIS 打包，产物落在 `dist/` 下（`快速粘贴 Setup x.y.z.exe` 安装包 + `win-unpacked/` 免安装目录），仓库已通过 `.gitignore` 忽略。
+`npm run dist` 会用 `electron-builder` 走 NSIS 打包，产物落在 `dist/` 下（`Quick Paste Setup x.y.z.exe` 安装包 + `win-unpacked/` 免安装目录），仓库已通过 `.gitignore` 忽略。
 
 ## 许可证
 

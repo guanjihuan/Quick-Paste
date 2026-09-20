@@ -98,13 +98,12 @@ const VK_CONTROL = 0x11;
 const VK_V = 0x56;
 const KEYEVENTF_KEYUP = 0x02;
 
-const isDev = !app.isPackaged;
 // 注意：userData 路径依赖 app 初始化状态，在 whenReady 里再解析更稳妥
 let userDataPath = null;
 
 // 构建标记：用户跑应用时看到这个 banner 就知道是含本次「快捷键自定义」的最新代码。
 // 调整 settings 面板里的快捷键录制 / 恢复默认相关问题时同步修改此字符串。
-const BUILD_TAG = 'shortcut-customize-2026-09-16';
+const BUILD_TAG = 'shortcut-customize-2026-09-20';
 console.log(`[quick-paste] build: ${BUILD_TAG}`);
 
 let mainWindow = null;
@@ -126,7 +125,6 @@ let startedAtLogin = false;
 // 上次前台窗口句柄（用于粘贴前主动切回）
 let lastFgHwnd = null;
 let ourThreadId = 0;
-const ourPid = process.pid;
 // 前台窗口轮询定时器
 let fgTrackTimer = null;
 
@@ -370,7 +368,7 @@ function createWindow() {
     minimizable: true,
     skipTaskbar: false,
     backgroundColor: '#08090A',
-    title: '快速粘贴',
+    title: 'Quick Paste',
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -434,7 +432,7 @@ function createTray() {
   }
 
   tray = new Tray(trayIcon);
-  tray.setToolTip('快速粘贴');
+  tray.setToolTip('Quick Paste');
 
   const menu = Menu.buildFromTemplate([
     { label: '显示 / 隐藏', click: () => toggleWindow() },
@@ -564,9 +562,13 @@ function sendCtrlV() {
       console.error('sendCtrlV error:', e);
     }
   } else if (process.platform === 'darwin') {
-    spawn('osascript', ['-e', 'tell application "System Events" to keystroke "v" using command down']);
+    // spawn 失败（命令不存在等）会以异步 'error' 事件抛出，
+    // 没有监听器会变成未捕获异常把主进程拉崩，这里必须兜底。
+    spawn('osascript', ['-e', 'tell application "System Events" to keystroke "v" using command down'])
+      .on('error', (e) => console.error('sendCtrlV spawn error:', e));
   } else {
-    spawn('xdotool', ['key', 'ctrl+v']);
+    spawn('xdotool', ['key', 'ctrl+v'])
+      .on('error', (e) => console.error('sendCtrlV spawn error:', e));
   }
 }
 
@@ -757,7 +759,11 @@ ipcMain.handle('paste', (_, text, opts) => {
   return { ok: true, hasTarget: true };
 });
 
-ipcMain.handle('window:hide', () => { if (mainWindow) mainWindow.hide(); });
+ipcMain.handle('window:hide', () => {
+  // 与其他 handler 保持一致的防护：退出路径上窗口可能已销毁，
+  // hide() 会抛 "Object has been destroyed"
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+});
 // 切换「始终置顶」。渲染进程负责把偏好写进 data.settings（持久化），
 // 主进程只负责：1) 立即应用；2) 后续 showFloating / pasteByHiding 路径拿这个状态。
 ipcMain.handle('window:setAlwaysOnTop', (_, on) => {
@@ -903,6 +909,16 @@ ipcMain.handle('data:export', async () => {
 
 // 渲染层获取当前已注册的全局快捷键（设置面板首次打开时显示）
 ipcMain.handle('shortcuts:getGlobalToggle', () => currentGlobalShortcut);
+
+// 录制新快捷键期间临时挂起 / 恢复当前全局快捷键：
+// 用户想录入的组合如果恰好是「当前已注册的那个」（比如想重录 Ctrl+Shift+V），
+// 按键会被系统级钩子截获去切换窗口，渲染层永远收不到 keydown，录制 UI 卡死。
+// 进入录制态时 unregisterAll 挂起，退出录制态（含取消 / 关闭设置面板）时恢复注册。
+// 极端情况（录制中进程崩溃）也只是本次会话没有全局快捷键，重启后 whenReady 会重新注册。
+ipcMain.handle('shortcuts:suspendGlobalToggle', () => {
+  try { globalShortcut.unregisterAll(); return true; } catch { return false; }
+});
+ipcMain.handle('shortcuts:resumeGlobalToggle', () => applyGlobalShortcut(currentGlobalShortcut));
 
 // 修改全局快捷键：渲染层在设置面板里点「录制」拿到新组合键后调用。
 //   1. 校验格式：必须是非空字符串且至少有一个 `+`（modifier + key 的最小形态）

@@ -47,4 +47,7 @@ contextBridge.exposeInMainWorld('api', {
   // 全局快捷键：读当前 / 改写并重注册（设置面板录制按钮调用）
   getGlobalToggle: () => ipcRenderer.invoke('shortcuts:getGlobalToggle'),
   setGlobalToggle: (acc) => ipcRenderer.invoke('shortcuts:setGlobalToggle', acc),
+  // 录制期间临时挂起 / 恢复全局快捷键，避免想录入的按键被系统钩子截获去切窗口
+  suspendGlobalToggle: () => ipcRenderer.invoke('shortcuts:suspendGlobalToggle'),
+  resumeGlobalToggle: () => ipcRenderer.invoke('shortcuts:resumeGlobalToggle'),
 });

@@ -1,2 +1,4 @@
 node_modules/
 dist/
+# 本地 UI 走查截图（开发产物，不入库）
+ui-check/

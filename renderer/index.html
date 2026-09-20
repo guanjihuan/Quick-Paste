@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self' file:; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: file:;" />
-  <title>快速粘贴</title>
+  <title>Quick Paste</title>
   <!-- 浏览器标签页 / 收藏夹 / 桌面快捷方式都会用到的 favicon：
        用项目根的 icon.ico，Chromium 内核会自动挑合适尺寸。 -->
   <link rel="icon" type="image/x-icon" href="../icon.ico" />
@@ -122,9 +122,9 @@
       <span class="logo">
         <!-- 任务栏/Alt-Tab 已经在用 icon.ico，标题栏左上角的徽标也用同一份图标保持一致。
              ICO 内置多尺寸，Chromium 会按容器尺寸自动挑最接近的那一档渲染。 -->
-        <img class="logo-img" src="../icon.ico" alt="快速粘贴" />
+        <img class="logo-img" src="../icon.ico" alt="Quick Paste" />
       </span>
-      <span class="title-name">快速粘贴</span>
+      <span class="title-name">Quick Paste</span>
     </div>
     <div class="title-actions">
       <button id="btn-pin-top" class="icon-btn toggle-on" title="始终置顶（点击切换）" aria-label="切换始终置顶" aria-pressed="true">
@@ -133,7 +133,7 @@
       <button id="btn-settings" class="icon-btn" title="设置">
         <svg class="icon"><use href="#i-settings"/></svg>
       </button>
-      <button id="btn-hide" class="icon-btn" title="关闭" aria-label="关闭（最小化到托盘）">
+      <button id="btn-hide" class="icon-btn" title="隐藏到托盘" aria-label="隐藏到托盘">
         <svg class="icon"><use href="#i-x"/></svg>
       </button>
     </div>
@@ -186,7 +186,9 @@
       <div class="search-bar">
         <svg class="icon search-icon"><use href="#i-search"/></svg>
         <input id="search-input" type="text" placeholder="搜索短语…" autocomplete="off" spellcheck="false" />
-        <button id="search-clear" class="search-clear hidden" title="清空">
+        <!-- 空搜索框时显示快捷键提示，有内容时让位给清空按钮（两者同位置互斥） -->
+        <kbd class="search-hint-kbd" id="search-hint-kbd">/</kbd>
+        <button id="search-clear" class="search-clear hidden" title="清空" aria-label="清空搜索">
           <svg class="icon"><use href="#i-x"/></svg>
         </button>
       </div>
@@ -238,13 +240,13 @@
         </button>
       </div>
       <div class="modal-body">
-        <label class="field-label">
+        <label class="field-label" for="phrase-title">
           <span>标题</span>
           <span class="field-counter" id="title-counter">0 / 40</span>
         </label>
         <input id="phrase-title" type="text" placeholder="比如：客服开场白" maxlength="40" />
 
-        <label class="field-label">
+        <label class="field-label" for="phrase-content">
           <span>内容</span>
           <span class="field-counter" id="content-counter">0 / 2000</span>
         </label>
@@ -320,7 +322,7 @@
           <svg class="icon"><use href="#i-settings"/></svg>
           设置
         </span>
-        <button class="icon-btn" data-close>
+        <button class="icon-btn" data-close title="关闭" aria-label="关闭设置面板">
           <svg class="icon"><use href="#i-x"/></svg>
         </button>
       </div>
@@ -402,7 +404,7 @@
           <div class="setting-row">
             <div class="setting-row-text">
               <div class="setting-label">粘贴时隐藏悬浮窗</div>
-              <div class="setting-desc">关闭后悬浮窗会立即重新显示</div>
+              <div class="setting-desc">粘贴瞬间短暂隐藏，约 0.2 秒后自动重新显示</div>
             </div>
             <label class="switch">
               <input type="checkbox" id="hide-on-paste-toggle" />

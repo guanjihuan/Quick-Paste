@@ -1,9 +1,10 @@
 {
   "name": "quick-paste",
   "version": "1.0.0",
-  "description": "悬浮快速粘贴工具 — 分组管理常用句子，点击即粘贴到当前焦点窗口",
+  "description": "Quick Paste — 悬浮粘贴工具，分组管理常用句子，点击即粘贴到当前焦点窗口",
+  "private": true,
   "main": "main.js",
-  "author": "",
+  "author": "关济寰",
   "license": "MIT",
   "scripts": {
     "start": "node ./scripts/start.js",
@@ -19,7 +20,7 @@
   },
   "build": {
     "appId": "com.example.quickpaste",
-    "productName": "快速粘贴",
+    "productName": "Quick Paste",
     "files": [
       "main.js",
       "preload.js",
@@ -44,7 +45,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "快速粘贴"
+      "shortcutName": "Quick Paste"
     }
   }
 }

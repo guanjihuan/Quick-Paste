@@ -1,5 +1,5 @@
 /* ============================================================
-   快速粘贴 — 精致深色主题（基于 Linear/Notion 设计语言）
+   Quick Paste — 精致深色主题（基于 Linear/Notion 设计语言）
    ============================================================ */
 
 :root {
@@ -216,9 +216,9 @@ input:focus, textarea:focus {
   height: 24px;
   border-radius: 6px;
   /* 图标本身已经有自己的配色和背景，不再叠渐变；
-     浅薄边/阴影保留下来，确保浅色主题下图标轮廓也能看见。 */
+     浅薄边用主题边框变量（rgba(255,255,255,0.08) 在亮色主题下完全不可见）。 */
   background: transparent;
-  box-shadow: 0 0 0 1px rgba(255,255,255,0.08), 0 2px 8px var(--accent-glow);
+  box-shadow: 0 0 0 1px var(--border-default), 0 2px 8px var(--accent-glow);
 }
 
 /* 不再铺满 logo 容器，缩小到 18px 留 3px 内边距：和标题栏文字字号（13px）拉开一档，
@@ -229,8 +229,9 @@ input:focus, textarea:focus {
   width: 18px;
   height: 18px;
   display: block;
-  /* ICO 解码出来的位图默认走 nearest-neighbor 在缩小时会发糊，这里切到平滑。 */
-  image-rendering: -webkit-optimize-contrast;
+  /* 注意：不要写 image-rendering: -webkit-optimize-contrast ——
+     它在 Chromium 里等价于 crisp-edges（像素化），与直觉相反。
+     默认值 auto 就是平滑缩放，18px 渲染 ICO 内置位图无需额外干预。 */
 }
 
 #titlebar .title-name {
@@ -291,8 +292,23 @@ input:focus, textarea:focus {
   color: var(--accent-hover);
 }
 
-body[data-theme="light"] .icon-btn.toggle-on:hover {
-  background: var(--accent-hover-bg);
+/* 键盘焦点可见性：button 全局 outline:none 后，Tab 焦点需要明确的视觉反馈（WCAG 2.4.7）。
+   :focus-visible 只对键盘聚焦生效，鼠标点击不会出现多余的框。 */
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 链接（设置面板「关于」区的开发者链接等）同上面的理由 */
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* 主题化选区颜色：输入框/文本域里选中文字时用 accent 色而不是浏览器默认蓝 */
+::selection {
+  background: var(--accent-mark-bg);
 }
 
 /* ===== 通用按钮 ===== */
@@ -451,7 +467,8 @@ body[data-theme="light"] .icon-btn.toggle-on:hover {
   gap: 6px;
   width: 100%;
   padding: 6px 8px 6px 10px;
-  margin-bottom: 1px;
+  /* 与 .group-item 的间距节奏保持一致（同为侧栏列表项） */
+  margin-bottom: 2px;
   border-radius: var(--radius-md);
   cursor: pointer;
   font-size: 13px;
@@ -512,7 +529,8 @@ body[data-theme="light"] .icon-btn.toggle-on:hover {
 
 .quick-item.active .count {
   color: var(--text-secondary);
-  background: rgba(255, 255, 255, 0.07);
+  /* 同 .group-item.active .count：用主题变量，亮色主题下白 7% 不可见 */
+  background: var(--bg-active);
 }
 
 .sidebar-section {
@@ -538,15 +556,22 @@ body[data-theme="light"] .icon-btn.toggle-on:hover {
   flex: 1;
   list-style: none;
   overflow-y: auto;
-  padding: 0 4px 10px;
+  /* padding-top 至少留 2px：拖拽排序时第一条分组的 drop-above 插入线
+   * 是 box-shadow: 0 -2px，伸出 li 上边缘 2px，padding 为 0 会被 overflow 裁掉 */
+  padding: 4px 4px 10px;
 }
 
 .group-item {
   position: relative;
   padding: 6px 8px 6px 10px;
-  margin-bottom: 1px;
+  /* margin-bottom 至少 2px：drop-below 插入线是 box-shadow: 0 2px，
+   * 间隙只有 1px 时线的下半截会被后绘制的兄弟项背景盖住，
+   * 导致 drop-below(1px) 比 drop-above(2px) 细一半 */
+  margin-bottom: 2px;
   border-radius: var(--radius-md);
-  cursor: pointer;
+  /* 与 .phrase-item 统一的拖拽光标：分组同样「点击选中 + 拖拽排序」，
+     抓手光标暗示可拖动（短语项已建立这个先例） */
+  cursor: grab;
   font-size: 13px;
   font-weight: 500;
   color: var(--text-secondary);
@@ -554,8 +579,13 @@ body[data-theme="light"] .icon-btn.toggle-on:hover {
   align-items: center;
   gap: 6px;
   transition: background var(--duration-fast) var(--ease),
-              color var(--duration-fast) var(--ease);
+              color var(--duration-fast) var(--ease),
+              box-shadow var(--duration-fast) var(--ease);
   border: 1px solid transparent;
+}
+
+.group-item:active {
+  cursor: grabbing;
 }
 
 .group-item:hover {
@@ -572,7 +602,9 @@ body[data-theme="light"] .icon-btn.toggle-on:hover {
 .group-item.active::before {
   content: '';
   position: absolute;
-  left: -6px;
+  /* 不能小于 -4px：#group-list 的 padding-left 是 4px，overflow 在 padding box 处裁剪，
+     -6px 时 3px 宽的指示条有 2px 在裁剪区外，只显示 1px */
+  left: -4px;
   top: 50%;
   transform: translateY(-50%) scaleY(0.6);
   width: 3px;
@@ -633,7 +665,8 @@ body[data-theme="light"] .icon-btn.toggle-on:hover {
 
 .group-item.active .count {
   color: var(--text-secondary);
-  background: rgba(255,255,255,0.07);
+  /* 用主题变量而不是 rgba(255,255,255,0.07)：亮色主题下白 7% 的胶囊底不可见 */
+  background: var(--bg-active);
 }
 
 /* 侧栏底部：只放一个折叠按钮，靠右下对齐——尺寸与 add-bar 里的展开按钮一致 */
@@ -755,8 +788,23 @@ body[data-theme="light"] .icon-btn.toggle-on:hover {
 
 .search-bar input {
   width: 100%;
-  padding: 6px 60px 6px 28px;
+  /* 右侧要避开同位置互斥的两个控件：清空按钮（18px）和「/」快捷键提示（约 22px），
+     取较宽的提示计算：right:14px（距输入框右缘 2px）+ 22px + 8px 间隙 = 32px；
+     之前的 60px 会让长文本提前 34px 开始横向滚动 */
+  padding: 6px 32px 6px 28px;
   font-size: 12.5px;
+}
+
+/* 空搜索框时显示在输入框右侧的快捷键提示，与清空按钮同位置互斥（JS 同步 hidden） */
+.search-hint-kbd {
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 1px 7px;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  pointer-events: none;
 }
 
 .search-clear {
@@ -856,6 +904,16 @@ body[data-theme="light"] .icon-btn.toggle-on:hover {
   box-shadow: 0 2px 0 var(--accent);
 }
 
+/* 选中项作为放置目标时：box-shadow 不跨 class 叠加（后声明的 box-shadow 会整体覆盖），
+ * 需要显式把选中描边和插入线写在一起，否则拖过选中项时选中描边会闪没 */
+.phrase-item.selected.drop-above {
+  box-shadow: 0 -2px 0 var(--accent), 0 0 0 1px var(--accent-subtle);
+}
+
+.phrase-item.selected.drop-below {
+  box-shadow: 0 2px 0 var(--accent), 0 0 0 1px var(--accent-subtle);
+}
+
 .phrase-top {
   display: flex;
   align-items: center;
@@ -924,7 +982,10 @@ body[data-theme="light"] .icon-btn.toggle-on:hover {
 }
 
 .phrase-item:hover .phrase-actions,
-.phrase-item.selected .phrase-actions {
+.phrase-item.selected .phrase-actions,
+.phrase-actions:focus-within {
+  /* focus-within：按钮虽然平时透明，但仍可被 Tab 聚焦——
+     键盘焦点进入时必须显示，否则焦点落在不可见元素上 */
   opacity: 1;
 }
 
@@ -973,6 +1034,10 @@ body[data-theme="light"] .icon-btn.toggle-on:hover {
   letter-spacing: -0.005em;
 }
 
+/* 搜索高亮：highlightText 同时用于标题和预览，两处样式必须一致——
+   只写 .phrase-preview 的话，标题里的 <mark> 会落到浏览器默认样式（黄底黑字），
+   深色主题下非常刺眼 */
+.phrase-title mark,
 .phrase-preview mark {
   background: rgba(251, 191, 36, 0.18);
   color: var(--warning);
@@ -989,11 +1054,22 @@ body[data-theme="light"] .icon-btn.toggle-on:hover {
   color: var(--text-tertiary);
 }
 
+/* 收藏/最近视图下来源分组名可能很长（分组名最长 60 字符），
+   不截断会撑破短语卡片的右边界 */
+.phrase-meta .dim {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .phrase-meta .use-count {
   display: inline-flex;
   align-items: center;
   gap: 3px;
   font-variant-numeric: tabular-nums;
+  /* 空间不足时先截断分组名（.dim），「已用 N 次」始终保持完整 */
+  flex-shrink: 0;
 }
 
 /* ===== 空状态 ===== */
@@ -1002,9 +1078,12 @@ body[data-theme="light"] .icon-btn.toggle-on:hover {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  /* safe center：空间够时居中；窗口最小高 360 时内容（约 230px）会超出剩余高度（约 177px），
+     普通 center 会从顶部裁掉插画、底部按钮也不可达——safe 让它退化为顶端对齐 + 可滚动 */
+  justify-content: safe center;
+  overflow-y: auto;
   text-align: center;
-  padding: 40px 24px;
+  padding: 24px 20px;
   gap: 6px;
 }
 
@@ -1145,11 +1224,18 @@ body[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
 
 .modal-card {
   width: 360px;
+  /* 窗口最小 280px 宽：不限制 max-width 时卡片两边被视口裁掉，输入框贴边 */
+  max-width: calc(100vw - 24px);
   background: var(--bg-overlay);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-lg);
   overflow: hidden;
+  /* 与 .panel-card 一致的高度约束：内容（如可纵向拉高的 textarea）超出窗口时
+     由 .modal-body 滚动兜底，否则弹窗会被顶出窗口、底部按钮不可达 */
+  max-height: calc(100% - 32px);
+  display: flex;
+  flex-direction: column;
   animation: modal-pop var(--duration-base) var(--ease);
 }
 
@@ -1167,6 +1253,8 @@ body[data-theme="light"] .modal {
   font-weight: 600;
   color: var(--text-primary);
   letter-spacing: -0.01em;
+  /* .modal-card 是 flex 列容器：内容超高时头部不压缩，由 body 滚动 */
+  flex-shrink: 0;
 }
 
 .modal-title-wrap {
@@ -1183,6 +1271,8 @@ body[data-theme="light"] .modal {
 
 .modal-body {
   padding: 16px;
+  /* .modal-card 限高后的滚动区（textarea 拉高 / 长提示消息时兜底） */
+  overflow-y: auto;
 }
 
 .field-label {
@@ -1267,6 +1357,11 @@ body[data-theme="light"] .modal {
   border-top: none;
   border-right: none;
   transform: rotate(-45deg) translate(1px, -1px);
+}
+
+.field-label-inline input[type="checkbox"]:focus-visible {
+  /* appearance:none 后默认焦点框也没了，用 accent 光晕补回键盘焦点反馈 */
+  box-shadow: 0 0 0 3px var(--accent-subtle);
 }
 
 .field-label-inline .icon {
@@ -1362,6 +1457,13 @@ body[data-theme="light"] .modal {
 
 .placeholder-hint summary:hover {
   color: var(--text-primary);
+}
+
+.placeholder-hint summary:focus-visible {
+  /* summary 可键盘聚焦（Enter/Space 展开），list-style:none 后也要补焦点框 */
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
 }
 
 .placeholder-hint .placeholder-list {
@@ -1466,7 +1568,8 @@ body[data-theme="light"] .modal {
   gap: 8px;
   z-index: 200;
   pointer-events: none;
-  max-width: 320px;
+  /* 窗口最小 280px 宽：固定 320px 会让右对齐的 toast 超出左边缘 */
+  max-width: min(320px, calc(100vw - 32px));
 }
 
 .toast {
@@ -1680,6 +1783,8 @@ body[data-theme="light"] .panel-backdrop {
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-lg);
   max-height: calc(100% - 32px);
+  /* 设置卡片宽 440px，窗口最小 280px —— 不限制宽度会在小窗口下两边被裁 */
+  max-width: calc(100vw - 24px);
   display: flex;
   flex-direction: column;
   animation: modal-pop var(--duration-base) var(--ease);
@@ -1741,11 +1846,19 @@ body[data-theme="light"] .panel-backdrop {
 .setting-row {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 8px 16px;
   padding: 10px 8px;
   margin: 0 -8px;
   border-radius: var(--radius-md);
   transition: background var(--duration-fast) var(--ease);
+  /* 窄窗口（设置卡片被 max-width 收窄到 ~256px）时右侧控件换到第二行，
+     而不是把左侧文字压成竖排单字列 */
+  flex-wrap: wrap;
+}
+
+/* 换行后控件仍然靠右，保持与宽屏一致的视觉锚点 */
+.setting-row > :last-child {
+  margin-left: auto;
 }
 
 .setting-row:hover {
@@ -1791,11 +1904,13 @@ body[data-theme="light"] .panel-backdrop {
 
 /* ===== 快捷键录制行 ===== */
 /* 视觉上与 .setting-actions 同宽，但 kbd 用衬底框表现「键帽」感，
-   两个按钮紧跟在后，整体一行不换。 */
+   两个按钮紧跟在后；窄窗口下允许内部换行（按钮掉到 kbd 下一行）。 */
 .shortcut-display {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 /* 模仿 VSCode 等 IDE 里的键帽样式：
@@ -1948,6 +2063,12 @@ kbd {
   left: 18px;
   background: #fff;
   box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.15);
+}
+
+.switch input:focus-visible + .switch-slider {
+  /* input 本体是 opacity:0 的，键盘焦点反馈要画在可视的滑块上 */
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+  border-color: var(--accent);
 }
 
 /* ===== Slider ===== */

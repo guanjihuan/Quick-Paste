@@ -29,6 +29,11 @@ let prevDropTarget = null;
 // 拖拽短语时悬停的目标分组：拖到分组上 ≠ 拖到短语间的缝隙，
 // 用 phraseDropTargetGroup 单独追踪，避免与 drop-above/below 互相打架。
 let phraseDropTargetGroup = null;
+// 拖拽期间列表可能滚动（拖到容器边缘时浏览器自动滚动、或用户滚轮），
+// 缓存的 rect 是视口坐标会随滚动整体平移——记录缓存时的 scrollTop，
+// dragover 里用滚动差值修正，不必重算 layout。
+let dragScrollEl = null;
+let dragScrollTopAtCache = 0;
 
 function cacheDragRects(selector) {
   dragRectCache = new Map();
@@ -36,6 +41,18 @@ function cacheDragRects(selector) {
   for (const el of list) {
     dragRectCache.set(el, el.getBoundingClientRect());
   }
+  // li 是滚动容器 ul 的直接子元素，parentElement 即滚动容器
+  dragScrollEl = list.length ? list[0].parentElement : null;
+  dragScrollTopAtCache = dragScrollEl ? dragScrollEl.scrollTop : 0;
+}
+
+// 读缓存 rect 并按滚动差值修正：滚动 Δ 后元素在视口里整体上移 Δ，
+// 不修正的话插入线会高亮到错位的 li 上。
+function getDragRect(el) {
+  const rect = dragRectCache && dragRectCache.get(el);
+  if (!rect) return null;
+  const dy = dragScrollEl ? dragScrollEl.scrollTop - dragScrollTopAtCache : 0;
+  return dy ? { top: rect.top - dy, height: rect.height } : rect;
 }
 
 function scheduleDropIndicator(target, above) {
@@ -74,8 +91,8 @@ function clearDropIndicators() {
 }
 
 // 拖短语到分组栏时给目标分组挂一个高亮 class，区别于上下插入线（drop-above/below）。
-// 用 dragover 持续刷新目标，而不是依赖 dragleave —— dragover 每像素 mousemove 都会触发，
-// 跨过 li 边界时新 dragover 自然会清掉旧的高亮，不需要单独的 dragleave 处理。
+// li 之间的目标切换靠 dragover 持续刷新（每像素 mousemove 都会触发，跨过 li 边界时
+// 新 dragover 自然清掉旧高亮）；拖出整个列表容器则由容器的 dragleave 兜底清理。
 function schedulePhraseDropTarget(groupItem) {
   if (phraseDropTargetGroup === groupItem) return;
   if (phraseDropTargetGroup) phraseDropTargetGroup.classList.remove('phrase-drop-target');
@@ -134,6 +151,10 @@ function keyEventToAccelerator(e) {
     'ArrowUp': 'Up', 'ArrowDown': 'Down', 'ArrowLeft': 'Left', 'ArrowRight': 'Right',
     'Enter': 'Return', 'Escape': 'Esc',
     ' ': 'Space',
+    // '+' 是 Electron accelerator 的分隔符，直接拼会生成 "Ctrl+Shift++" 这种
+    // 非法字符串导致注册必败；Electron 用 'Plus' 表示这个键（标准美式键盘的 =/+ 键）。
+    // 同理 '=' 也统一映射为 Plus，避免不同键盘布局下注册行为不一致。
+    '+': 'Plus', '=': 'Plus',
   };
   if (map[key]) key = map[key];
   else if (key.length === 1) key = key.toUpperCase();
@@ -407,9 +428,12 @@ function renderGroups() {
     li.addEventListener('dragstart', (e) => {
       dragSrcId = g.id;
       dragSrcKind = 'group';
+      // 防御性重置：上一轮拖拽若因重渲染等原因没走到 dragend 清理，
+      // 这里把残留的指示状态清干净再开始新一轮。
+      clearDropIndicators();
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', g.id);
-      // 拖拽过程中 list 不会重排，rect 在整个拖拽期间稳定。
+      // 拖拽过程中 list 不会重排，rect 在整个拖拽期间稳定（滚动由差值修正）。
       // 在 dragstart 一次性算好所有 li 的 rect，dragover 直接读缓存，
       // 避免每个 mousemove 都触发 getBoundingClientRect 强制 layout。
       cacheDragRects('.group-item');
@@ -420,6 +444,7 @@ function renderGroups() {
       clearDropIndicators();
       dragSrcId = null; dragSrcKind = null;
       dragRectCache = null;
+      dragScrollEl = null;
     });
     li.addEventListener('dragover', (e) => {
       // 拖短语到分组：把当前分组高亮成「落点」，drop 时整条移过去。
@@ -428,6 +453,9 @@ function renderGroups() {
       if (dragSrcKind === 'phrase') {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
+        // 从短语列表拖进分组栏：短语侧的插入线要清掉，
+        // 否则分组高亮和短语插入线会同时亮着（两种指示互斥）。
+        scheduleDropIndicator(null);
         // 拖回原分组没有意义（movePhraseToGroup 内部会 no-op），不要亮起来骗用户。
         // 通过 phraseIndex 反查源分组，避免每帧都遍历全库。
         const owner = phraseIndex.get(dragSrcId);
@@ -438,15 +466,20 @@ function renderGroups() {
         }
         return;
       }
-      if (dragSrcKind !== 'group' || dragSrcId === g.id) return;
+      if (dragSrcKind !== 'group') return;
+      // 悬停在拖拽源本身：清掉上一个目标的插入线，否则离开上一个目标后线条残留。
+      if (dragSrcId === g.id) {
+        scheduleDropIndicator(null);
+        return;
+      }
       e.preventDefault();
-      const rect = dragRectCache && dragRectCache.get(li);
+      const rect = getDragRect(li);
       if (!rect) return;
       const above = (e.clientY - rect.top) < rect.height / 2;
       scheduleDropIndicator(li, above);
     });
-    // drop-indicator 的清理统一在 dragend / dragleave 一起做（避免拖到 li 之间的缝隙时
-    // 残留半边 drop-above/drop-below 状态）。这里只清自己——dragend 会兜底。
+    // drop-indicator 的清理统一在 dragend / 容器 dragleave 一起做（拖到列表外的区域时
+    // 由 dragleave 兜底，离开窗口或松手时由 dragend 兜底）。
     li.addEventListener('drop', (e) => {
       e.preventDefault();
       // 拖短语到分组：把该短语移动到目标分组（顶部插入，与新建短语行为一致）。
@@ -585,10 +618,14 @@ function renderPhrases() {
       illu.classList.add('run-in');
     }
     empty.classList.remove('hidden');
+    // 空列表也要藏掉：#phrase-list 是 flex:1，空着仍会占一半高度，
+    // 把 empty-hint（同为 flex:1）挤到下半屏居中，上半屏留一块空白
+    list.classList.add('hidden');
     selectedPhraseIndex = -1;
     return;
   }
   empty.classList.add('hidden');
+  list.classList.remove('hidden');
 
   if (selectedPhraseIndex >= phrases.length) selectedPhraseIndex = phrases.length - 1;
 
@@ -631,6 +668,8 @@ function renderPhrases() {
       li.addEventListener('dragstart', (e) => {
         dragSrcId = p.id;
         dragSrcKind = 'phrase';
+        // 防御性重置：同分组 dragstart，清掉上一轮可能残留的指示状态
+        clearDropIndicators();
         e.dataTransfer.effectAllowed = 'move';
         e.dataTransfer.setData('text/plain', p.id);
         // 与分组拖拽共用 rect 缓存：避免每个 mousemove 都触发 layout
@@ -642,11 +681,19 @@ function renderPhrases() {
         clearDropIndicators();
         dragSrcId = null; dragSrcKind = null;
         dragRectCache = null;
+        dragScrollEl = null;
       });
       li.addEventListener('dragover', (e) => {
-        if (dragSrcKind !== 'phrase' || dragSrcId === p.id) return;
+        if (dragSrcKind !== 'phrase') return;
+        // 从分组栏拖回短语列表：分组高亮要清掉，避免与短语插入线同时显示。
+        clearPhraseDropTarget();
+        // 悬停在拖拽源本身：清掉上一个目标的插入线，否则线条残留。
+        if (dragSrcId === p.id) {
+          scheduleDropIndicator(null);
+          return;
+        }
         e.preventDefault();
-        const rect = dragRectCache && dragRectCache.get(li);
+        const rect = getDragRect(li);
         if (!rect) return;
         const above = (e.clientY - rect.top) < rect.height / 2;
         scheduleDropIndicator(li, above);
@@ -667,7 +714,7 @@ function renderPhrases() {
         { label: '粘贴', icon: 'i-paste-icon', onClick: () => pastePhrase(p) },
         { label: '仅复制', icon: 'i-copy', onClick: () => copyPhrase(p) },
         { type: 'divider' },
-        { label: p.fav ? '取消收藏' : '收藏', icon: 'i-pin', onClick: () => toggleFav(p) },
+        { label: p.fav ? '取消收藏' : '收藏', icon: 'i-star', onClick: () => toggleFav(p) },
         { label: '编辑', icon: 'i-edit', onClick: () => openPhraseModal(p) },
         { type: 'divider' },
         { label: '删除', icon: 'i-trash', danger: true, onClick: () => deletePhrase(p) },
@@ -769,6 +816,10 @@ const renderPhrasesDebounced = debounce(() => renderPhrases(), 80);
 // actOnSelected 每次调用都重新创建数组。
 const ALLOWED_CLICK_ACTIONS = ['paste', 'copy'];
 
+// 与主进程 MAX_PHRASE_CONTENT_LENGTH 对齐：导入路径绕过弹窗的 maxlength=2000 限制，
+// 不截断的话 >100KB 的短语能存进库，但粘贴/复制时又被主进程拒绝，行为不一致。
+const MAX_PHRASE_CONTENT_LENGTH = 100 * 1024;
+
 // 搜索 query 的唯一写入入口:IME 上屏、英文输入、点清空按钮都走这里,
 // 避免散落在多处的赋值 / 隐藏 toggle 出现状态不一致。
 function setSearchQuery(q) {
@@ -785,7 +836,11 @@ function setSearchQuery(q) {
 // 而搜索匹配仍然按 trim 后的内容来。
 function syncSearchClearVisibility() {
   const input = $('search-input');
-  $('search-clear').classList.toggle('hidden', input.value.length === 0);
+  const hasText = input.value.length > 0;
+  $('search-clear').classList.toggle('hidden', !hasText);
+  // 快捷键提示（/）与清空按钮占据同一位置，互斥显示
+  const hint = $('search-hint-kbd');
+  if (hint) hint.classList.toggle('hidden', hasText);
 }
 
 function isAnyPanelOpen() {
@@ -1326,6 +1381,9 @@ async function clearGroupPhrases(group) {
 }
 
 async function exportDataNow() {
+  // 先把防抖队列里待保存的改动落盘：persist 有 200ms 防抖窗口，
+  // 不 flush 的话「刚改完立刻导出」会把最新改动漏出导出文件。
+  try { await persist.flush(); } catch {}
   const res = await window.api.exportData();
   if (res && res.ok) showToast(`已导出到：${res.filePath}`, 'success');
   else if (res && res.canceled) return;
@@ -1360,7 +1418,7 @@ function mergeImported(imported) {
       if (existing) {
         // 修复：导入数据没带 title/fav 时保留现值，避免覆盖为默认值
         existing.title = typeof ip.title === 'string' ? ip.title : existing.title;
-        existing.content = ip.content;
+        existing.content = ip.content.slice(0, MAX_PHRASE_CONTENT_LENGTH);
         existing.fav = typeof ip.fav === 'boolean' ? ip.fav : existing.fav;
         updatedPhrases++;
       } else {
@@ -1369,7 +1427,7 @@ function mergeImported(imported) {
         const newPhrase = {
           id: newPhraseId,
           title: typeof ip.title === 'string' ? ip.title : '',
-          content: ip.content,
+          content: ip.content.slice(0, MAX_PHRASE_CONTENT_LENGTH),
           fav: !!ip.fav,
           useCount: typeof ip.useCount === 'number' ? ip.useCount : 0,
         };
@@ -1438,7 +1496,7 @@ async function applyImportedData(incoming) {
           return {
             id,
             title: typeof p.title === 'string' ? p.title : '',
-            content: p.content,
+            content: p.content.slice(0, MAX_PHRASE_CONTENT_LENGTH),
             fav: !!p.fav,
             // 导入文件带 useCount 用导入的，否则从本地旧数据里找回（同 id 的累积计数）
             useCount: typeof p.useCount === 'number'
@@ -1636,6 +1694,11 @@ function startRecordShortcut() {
   }
   isRecordingShortcut = true;
   recordInvalidShown = false;
+  // 挂起当前全局快捷键：否则想录入的组合恰好是已注册的那个时，
+  // 按键会被系统钩子截获去切换窗口，渲染层收不到 keydown，录制卡死。
+  if (window.api.suspendGlobalToggle) {
+    try { window.api.suspendGlobalToggle(); } catch {}
+  }
   const display = document.querySelector('.shortcut-display');
   if (display) display.classList.add('recording');
   const btn = $('btn-record-shortcut');
@@ -1646,7 +1709,13 @@ function startRecordShortcut() {
 }
 
 function stopRecordShortcut() {
+  // 幂等：未在录制态时调用（如关闭设置面板的兜底路径）不重复发 IPC
+  if (!isRecordingShortcut) return;
   isRecordingShortcut = false;
+  // 恢复录制前挂起的全局快捷键（重新注册 currentGlobalShortcut）
+  if (window.api.resumeGlobalToggle) {
+    try { window.api.resumeGlobalToggle(); } catch {}
+  }
   const display = document.querySelector('.shortcut-display');
   if (display) display.classList.remove('recording');
   const btn = $('btn-record-shortcut');
@@ -2173,6 +2242,16 @@ async function init() {
   if (emptyAdd) emptyAdd.addEventListener('click', () => openPhraseModal());
 
   $('phrase-list').addEventListener('click', onPhraseListClick);
+
+  // 拖出列表容器（移到容器 padding、列表外区域或窗口外）时清掉插入线和分组高亮，
+  // 否则最后一条指示会一直残留到 dragend。li 之间的移动 relatedTarget 仍在容器内，
+  // 不清——那种切换由 dragover 自己接力完成。
+  for (const listEl of [$('group-list'), $('phrase-list')]) {
+    listEl.addEventListener('dragleave', (e) => {
+      if (e.relatedTarget && listEl.contains(e.relatedTarget)) return;
+      clearDropIndicators();
+    });
+  }
 
   // 侧栏顶部「收藏 / 最近」点击：切换过滤视图，
   // 再点一次已激活的项则退回「全部」（侧栏没有「全部」按钮，需要这个出口）。
